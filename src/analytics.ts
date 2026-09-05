@@ -1,5 +1,3 @@
-export const DEFAULT_ANALYTICS_ENDPOINT = "https://ai-proxy-server-staging.hoangbkit.workers.dev/v1/analytics/batch";
-
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const FLUSH_INTERVAL_MS = 60 * 1000;
 const RETRY_INTERVAL_MS = 60 * 1000;
@@ -65,7 +63,7 @@ export interface BrowserAnalyticsConfig {
   appId: string;
   appVersion: string | (() => string);
   productionOrigins: string | readonly string[];
-  endpoint?: string;
+  endpoint: string;
   storageKey?: string;
 }
 
@@ -286,7 +284,7 @@ export class BrowserAnalytics {
     this.runtime = runtime;
     this.appId = config.appId;
     this.appVersion = typeof config.appVersion === "function" ? config.appVersion : () => config.appVersion as string;
-    this.endpoint = config.endpoint ?? DEFAULT_ANALYTICS_ENDPOINT;
+    this.endpoint = config.endpoint;
     this.storageKey = config.storageKey ?? `web-app-foundation.analytics.${config.appId}.v1`;
     const origins = typeof config.productionOrigins === "string" ? [config.productionOrigins] : config.productionOrigins;
     this.productionOrigins = new Set(origins.map(normalizeOrigin));
