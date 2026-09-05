@@ -20,6 +20,7 @@ import { createBrowserAnalytics } from "web-app-foundation/analytics";
 const analytics = createBrowserAnalytics({
   appId: "my-web-app",
   appVersion: "1.0.0",
+  endpoint: "https://analytics.example.com/v1/batch",
   productionOrigins: [
     "https://example.com",
     "https://www.example.com",
@@ -31,7 +32,7 @@ analytics.track("page_view", "pricing");
 analytics.track("signup_started");
 ```
 
-`productionOrigins` is intentionally required. Analytics is disabled when the current origin is not in that list, so localhost and preview deployments do not send data by default.
+`endpoint` and `productionOrigins` are intentionally required. The library never contains or falls back to a shared analytics server. Analytics is disabled when the current origin is not in `productionOrigins`, so localhost and preview deployments do not send data by default.
 
 ### Configuration
 
@@ -39,8 +40,8 @@ analytics.track("signup_started");
 | --- | --- | --- |
 | `appId` | yes | Public application identifier sent as `x-app-id`. |
 | `appVersion` | yes | Version string or function returning the current version. |
+| `endpoint` | yes | Batch endpoint owned/configured by the host application. |
 | `productionOrigins` | yes | Exact production origins allowed to collect analytics. |
-| `endpoint` | no | Batch endpoint. Defaults to the shared BYOK analytics endpoint. |
 | `storageKey` | no | Local storage key. Defaults to an app-specific namespace. |
 
 ### Events
