@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   BrowserAnalytics,
-  DEFAULT_ANALYTICS_ENDPOINT,
   type AnalyticsRuntime,
   type BrowserAnalyticsConfig,
 } from "../src/analytics.js";
@@ -12,10 +11,13 @@ class MemoryStorage {
   setItem(key: string, value: string): void { this.values.set(key, value); }
 }
 
+const TEST_ENDPOINT = "https://analytics.example.com/v1/batch";
+
 const baseConfig: BrowserAnalyticsConfig = {
-  appId: "chat-byok-pro",
-  appVersion: "0.1.0+test",
-  productionOrigins: "https://chat.byok.pro",
+  appId: "example-web-app",
+  appVersion: "1.0.0+test",
+  productionOrigins: "https://example.com",
+  endpoint: TEST_ENDPOINT,
 };
 
 function clock(options: {
@@ -29,7 +31,7 @@ function clock(options: {
   let sequence = 0;
   const runtime: AnalyticsRuntime = {
     now: () => now,
-    origin: options.origin ?? "https://chat.byok.pro",
+    origin: options.origin ?? "https://example.com",
     storage,
     fetch: options.fetch ?? (async () => new Response("{}", { status: 200 })),
     randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
@@ -59,7 +61,7 @@ describe("BrowserAnalytics", () => {
     expect(batch?.days[0]).toMatchObject({
       day: "2026-09-04",
       platform: "web",
-      appVersion: "0.1.0+test",
+      appVersion: "1.0.0+test",
       sessions: 1,
       events: [
         { name: "message_sent", count: 1 },
@@ -127,7 +129,7 @@ describe("BrowserAnalytics", () => {
     expect(analytics.enabled).toBe(true);
   });
 
-  it("uploads with the configured app id and no app secret", async () => {
+  it("uploads to the explicitly configured endpoint with no app secret", async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     const fetchMock: typeof fetch = async (input, init) => {
       calls.push([input, init]);
@@ -142,11 +144,11 @@ describe("BrowserAnalytics", () => {
     expect(calls).toHaveLength(1);
     const [url, init] = calls[0]!;
     const headers = init?.headers as Record<string, string> | undefined;
-    expect(url).toBe(DEFAULT_ANALYTICS_ENDPOINT);
+    expect(url).toBe(TEST_ENDPOINT);
     expect(init?.method).toBe("POST");
     expect(headers).toMatchObject({
       "content-type": "application/json",
-      "x-app-id": "chat-byok-pro",
+      "x-app-id": "example-web-app",
     });
     expect(headers?.["x-installation-id"]).toMatch(/^[0-9a-f-]{36}$/);
     expect(headers).not.toHaveProperty("x-app-key");
