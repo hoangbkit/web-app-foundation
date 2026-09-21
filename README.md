@@ -2,7 +2,7 @@
 
 Small reusable browser foundations for lightweight web apps and landing pages.
 
-The first module is a first-party analytics client extracted from `chat.byok.pro`. It keeps the same privacy-oriented model: local cumulative daily snapshots, bounded event counters, session duration, retryable uploads, and no raw activity history.
+The first module is a first-party analytics client extracted from `chat.byok.pro`. It keeps the same privacy-oriented model: local cumulative daily snapshots, bounded event/error counters, session duration, retryable uploads, and no raw activity history.
 
 ## Install
 
@@ -20,7 +20,7 @@ import { createBrowserAnalytics } from "web-app-foundation/analytics";
 const analytics = createBrowserAnalytics({
   appId: "my-web-app",
   appVersion: "1.0.0",
-  endpoint: "https://analytics.example.com/v1/batch",
+  endpoint: "https://analytics.example.com/v1/analytics/batch",
   productionOrigins: [
     "https://example.com",
     "https://www.example.com",
@@ -30,6 +30,7 @@ const analytics = createBrowserAnalytics({
 analytics.start();
 analytics.track("page_view", "pricing");
 analytics.track("signup_started");
+analytics.trackError("api_request_failed", "generation");
 ```
 
 `endpoint` and `productionOrigins` are intentionally required. The library never contains or falls back to a shared analytics server. Analytics is disabled when the current origin is not in `productionOrigins`, so localhost and preview deployments do not send data by default.
@@ -57,6 +58,20 @@ analytics.track("theme_changed", "dark");
 
 Do not put prompts, messages, email addresses, user-entered text, full URLs, or other personal/content data into event names or dimensions.
 
+
+### Errors
+
+Use `trackError` for bounded reliability signals:
+
+```ts
+analytics.trackError("model_load_failed", "generation");
+analytics.trackError("unexpected_termination", "app", "fatal");
+```
+
+Error codes and components must be lowercase snake case, up to 48 characters. Severity is `"error"` or `"fatal"`. Error counters are cumulative per UTC day, just like events.
+
+Do not send exception messages, stack traces, URLs, filenames, prompts, user text, or arbitrary metadata. Map failures to a small stable vocabulary instead.
+
 ### What is sent
 
 Each upload is a cumulative snapshot containing:
@@ -67,10 +82,11 @@ Each upload is a cumulative snapshot containing:
 - session count
 - active session seconds
 - bounded event counters
+- bounded error counters
 
-Requests also include a random installation identifier stored locally in the browser. There is no app secret in the client.
+Requests also include a random installation identifier stored locally in the browser. There is no app secret in the client, and web snapshots do not send the native-only `osVersion`, `appBuild`, `deviceFamily`, or `architecture` fields.
 
-The client retains at most 7 days, 50 distinct event counters per day, and 100 counters per batch. A new session starts after 30 minutes of inactivity. Dirty state is flushed at most once per minute and retried after failures.
+The client retains at most 7 days, 50 distinct event counters per day, and 100 event counters per batch. One event saturates at 500 occurrences per day, with 2,000 total event occurrences per day. Error analytics allow 20 distinct code/component/severity counters per day, 140 per batch, and 100 total error occurrences per day. A new session starts after 30 minutes of inactivity. Dirty state is flushed at most once per minute and retried after failures.
 
 ### Lifecycle
 

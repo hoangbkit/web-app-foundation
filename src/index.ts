@@ -6,6 +6,8 @@ export {
 export type {
   AnalyticsBatch,
   AnalyticsDaySnapshot,
+  AnalyticsErrorCounter,
+  AnalyticsErrorSeverity,
   AnalyticsEventCounter,
   AnalyticsRuntime,
   BrowserAnalyticsConfig,

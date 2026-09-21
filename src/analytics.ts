@@ -4,16 +4,22 @@ const RETRY_INTERVAL_MS = 60 * 1000;
 const MAX_DAYS = 7;
 const MAX_EVENTS_PER_DAY = 50;
 const MAX_EVENT_COUNTERS_PER_BATCH = 100;
-const MAX_EVENT_COUNT = 100_000;
+const MAX_EVENT_COUNT = 500;
+const MAX_TOTAL_EVENT_COUNT_PER_DAY = 2_000;
+const MAX_ERRORS_PER_DAY = 20;
+const MAX_ERROR_COUNTERS_PER_BATCH = 140;
+const MAX_TOTAL_ERROR_COUNT_PER_DAY = 100;
 const MAX_SESSION_COUNT = 1_000;
 const MAX_SESSION_MS = 86_400_000;
 const EVENT_NAME_PATTERN = /^[a-z][a-z0-9_]{0,47}$/;
+const ERROR_TOKEN_PATTERN = /^[a-z][a-z0-9_]{0,47}$/;
 const DIMENSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/;
 
 interface DayState {
   sessions: number;
   sessionMs: number;
   events: Record<string, number>;
+  errors?: Record<string, number>;
 }
 
 interface SessionState {
@@ -35,6 +41,15 @@ export interface AnalyticsEventCounter {
   dimension?: string;
 }
 
+export type AnalyticsErrorSeverity = "error" | "fatal";
+
+export interface AnalyticsErrorCounter {
+  code: string;
+  component: string;
+  severity: AnalyticsErrorSeverity;
+  count: number;
+}
+
 export interface AnalyticsDaySnapshot {
   day: string;
   platform: "web";
@@ -42,6 +57,7 @@ export interface AnalyticsDaySnapshot {
   sessions: number;
   sessionSeconds: number;
   events: AnalyticsEventCounter[];
+  errors: AnalyticsErrorCounter[];
 }
 
 export interface AnalyticsBatch {
@@ -82,6 +98,18 @@ function parseEventKey(key: string): { name: string; dimension?: string } {
   return dimension ? { name, dimension } : { name };
 }
 
+function errorKey(code: string, component: string, severity: AnalyticsErrorSeverity): string {
+  return `${code}\u0000${component}\u0000${severity}`;
+}
+
+function parseErrorKey(key: string): { code: string; component: string; severity: AnalyticsErrorSeverity } | null {
+  const parts = key.split("\u0000");
+  if (parts.length !== 3) return null;
+  const [code, component, severity] = parts;
+  if (!code || !component || (severity !== "error" && severity !== "fatal")) return null;
+  return { code, component, severity };
+}
+
 function freshState(randomUUID: () => string): AnalyticsState {
   return {
     installationId: randomUUID(),
@@ -103,12 +131,25 @@ function validStoredEvent(key: string, count: unknown): boolean {
     && validNumber(count);
 }
 
+function validStoredError(key: string, count: unknown): boolean {
+  const error = parseErrorKey(key);
+  return Boolean(
+    error
+    && ERROR_TOKEN_PATTERN.test(error.code)
+    && ERROR_TOKEN_PATTERN.test(error.component)
+    && validNumber(count),
+  );
+}
+
 function validDayState(value: unknown): value is DayState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Partial<DayState>;
   if (!validNumber(candidate.sessions) || !validNumber(candidate.sessionMs)) return false;
   if (!candidate.events || typeof candidate.events !== "object" || Array.isArray(candidate.events)) return false;
-  return Object.entries(candidate.events).every(([key, count]) => validStoredEvent(key, count));
+  if (!Object.entries(candidate.events).every(([key, count]) => validStoredEvent(key, count))) return false;
+  if (candidate.errors === undefined) return true;
+  if (typeof candidate.errors !== "object" || candidate.errors === null || Array.isArray(candidate.errors)) return false;
+  return Object.entries(candidate.errors).every(([key, count]) => validStoredError(key, count));
 }
 
 function validSession(value: unknown): value is SessionState | null {
@@ -154,7 +195,7 @@ function loadState(
 function dayBucket(state: AnalyticsState, day: string): DayState {
   const existing = state.days[day];
   if (existing) return existing;
-  const created: DayState = { sessions: 0, sessionMs: 0, events: {} };
+  const created: DayState = { sessions: 0, sessionMs: 0, events: {}, errors: {} };
   state.days[day] = created;
   return created;
 }
@@ -361,7 +402,58 @@ export class BrowserAnalytics {
     const newCounter = !(key in bucket.events);
     if (newCounter && Object.keys(bucket.events).length >= MAX_EVENTS_PER_DAY) return;
     if (newCounter && totalEventCounters(this.state) >= MAX_EVENT_COUNTERS_PER_BATCH) return;
-    bucket.events[key] = Math.min(MAX_EVENT_COUNT, (bucket.events[key] ?? 0) + 1);
+
+    const previousCount = Math.min(MAX_EVENT_COUNT, Math.max(0, Math.floor(bucket.events[key] ?? 0)));
+    const nextCount = Math.min(MAX_EVENT_COUNT, previousCount + 1);
+    const currentTotal = Object.values(bucket.events)
+      .reduce((total, count) => total + Math.min(MAX_EVENT_COUNT, Math.max(0, Math.floor(count))), 0);
+    if (currentTotal - previousCount + nextCount > MAX_TOTAL_EVENT_COUNT_PER_DAY) return;
+
+    bucket.events[key] = nextCount;
+    this.markDirty();
+    this.persist();
+  }
+
+  trackError(
+    code: string,
+    component: string,
+    severity: AnalyticsErrorSeverity = "error",
+    count = 1,
+  ): void {
+    if (
+      !this.enabled
+      || !ERROR_TOKEN_PATTERN.test(code)
+      || !ERROR_TOKEN_PATTERN.test(component)
+      || (severity !== "error" && severity !== "fatal")
+      || !Number.isSafeInteger(count)
+      || count < 1
+      || count > MAX_TOTAL_ERROR_COUNT_PER_DAY
+    ) return;
+
+    const now = this.runtime.now();
+    pruneDays(this.state, now);
+    markActivity(this.state, now, this.runtime.visible());
+    const bucket = dayBucket(this.state, utcDay(now));
+    const errors = bucket.errors ?? (bucket.errors = {});
+    const key = errorKey(code, component, severity);
+    const newCounter = !(key in errors);
+    if (newCounter && Object.keys(errors).length >= MAX_ERRORS_PER_DAY) return;
+
+    const previousCount = Math.min(
+      MAX_TOTAL_ERROR_COUNT_PER_DAY,
+      Math.max(0, Math.floor(errors[key] ?? 0)),
+    );
+    const nextCount = Math.min(MAX_TOTAL_ERROR_COUNT_PER_DAY, previousCount + count);
+    const currentTotal = Object.values(errors).reduce(
+      (total, value) => total + Math.min(
+        MAX_TOTAL_ERROR_COUNT_PER_DAY,
+        Math.max(0, Math.floor(value)),
+      ),
+      0,
+    );
+    if (currentTotal - previousCount + nextCount > MAX_TOTAL_ERROR_COUNT_PER_DAY) return;
+
+    errors[key] = nextCount;
     this.markDirty();
     this.persist();
   }
@@ -371,10 +463,34 @@ export class BrowserAnalytics {
     pruneDays(this.state, now);
     const days = Object.keys(this.state.days).sort().map((day) => {
       const bucket = this.state.days[day]!;
-      const events = Object.entries(bucket.events).map(([key, count]) => ({
-        ...parseEventKey(key),
-        count: Math.min(MAX_EVENT_COUNT, Math.max(0, Math.floor(count))),
-      }));
+      let remainingEvents = MAX_TOTAL_EVENT_COUNT_PER_DAY;
+      const events = Object.entries(bucket.events).flatMap(([key, rawCount]) => {
+        if (remainingEvents <= 0) return [];
+        const count = Math.min(
+          MAX_EVENT_COUNT,
+          remainingEvents,
+          Math.max(0, Math.floor(rawCount)),
+        );
+        if (count <= 0) return [];
+        remainingEvents -= count;
+        return [{ ...parseEventKey(key), count }];
+      });
+
+      let remainingErrors = MAX_TOTAL_ERROR_COUNT_PER_DAY;
+      const errors = Object.entries(bucket.errors ?? {}).flatMap(([key, rawCount]) => {
+        if (remainingErrors <= 0) return [];
+        const parsed = parseErrorKey(key);
+        if (!parsed) return [];
+        const count = Math.min(
+          MAX_TOTAL_ERROR_COUNT_PER_DAY,
+          remainingErrors,
+          Math.max(0, Math.floor(rawCount)),
+        );
+        if (count <= 0) return [];
+        remainingErrors -= count;
+        return [{ ...parsed, count }];
+      }).slice(0, MAX_ERRORS_PER_DAY);
+
       return {
         day,
         platform: "web" as const,
@@ -382,10 +498,17 @@ export class BrowserAnalytics {
         sessions: Math.min(MAX_SESSION_COUNT, Math.max(0, Math.floor(bucket.sessions))),
         sessionSeconds: Math.min(86_400, Math.max(0, Math.floor(bucket.sessionMs / 1000))),
         events,
+        errors,
       };
     });
     if (days.length === 0) return null;
-    return { schemaVersion: 1, requestId: `web-${this.runtime.randomUUID()}`, days };
+    let remainingErrorCounters = MAX_ERROR_COUNTERS_PER_BATCH;
+    const boundedDays = days.map((day) => {
+      const errors = day.errors.slice(0, remainingErrorCounters);
+      remainingErrorCounters -= errors.length;
+      return { ...day, errors };
+    });
+    return { schemaVersion: 1, requestId: `web-${this.runtime.randomUUID()}`, days: boundedDays };
   }
 
   async flush(force = false): Promise<void> {
