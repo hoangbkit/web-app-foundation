@@ -2,7 +2,7 @@
 
 Small reusable browser foundations for lightweight web apps and landing pages.
 
-The first module is a first-party analytics client extracted from `chat.byok.pro`. It keeps the same privacy-oriented model: local cumulative daily snapshots, bounded event counters, session duration, retryable uploads, and no raw activity history.
+The first module is a first-party analytics client extracted from `chat.byok.pro`. It keeps the same privacy-oriented model: local cumulative daily snapshots, bounded event/error counters, session duration, retryable uploads, and no raw activity history.
 
 ## Install
 
